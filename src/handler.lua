@@ -51,6 +51,103 @@ function table_to_string(tbl)
     return result
 end
 
+
+function table_to_json(tbl)
+    local result = ""
+    local array = false
+    
+    if (tbl == nil) then
+        return result
+    end
+
+    for k, v in pairs(tbl) do
+        -- Check the key type (ignore any numerical keys - assume its an array)
+        -- TODO: this will result in incorrect serialization if the first element is not decider
+        if (k ~= nill and type(k) == "string") then
+            result = result.."\""..k.."\""..":"
+        else
+            array = true
+        end
+
+        -- Check the value type
+        if type(v) == "table" then
+            result =   result .. table_to_json(v) 
+        elseif type(v) == "boolean" then
+            result = result..tostring(v)
+        else
+            result = result.."\""..v.."\""
+        end
+        result = result..","
+    end
+    -- Remove leading commas from the result
+    if result ~= "" then
+        result = result:sub(1, result:len()-1)
+    end
+    
+    if (array) then
+        result = "[" .. result .. "]"
+    else
+        result = "{" .. result .. "}"
+    end
+    return result
+end
+
+local function write_claims_to_headers(conf, jwt_claims)
+
+    local mapped_name = nil
+    local add_header = false
+
+
+    add_header = (conf.c2h_claim_filter_pattern == nil)
+    for claim_key,claim_value in pairs(jwt_claims) do
+        -- print ("claim key=" .. claim_key .. " value=" .. tostring(claim_value))
+        if conf.c2h_claim_filter_pattern  then
+            for _,claim_pattern in pairs(conf.c2h_claim_filter_pattern) do      
+                add_header = string.match(claim_key, "^"..claim_pattern.."$")
+                if (add_header) then break end
+            end
+        end
+        if add_header then 
+            mapped_name = conf.c2h_name_mapping[claim_key]
+            if (mapped_name) then
+                claim_key = mapped_name
+            end
+            if type(claim_value) == "table" then
+                claim_value = table_to_json(claim_value)
+            end
+            if (conf.c2h_header_prefix) then
+                kong.service.request.set_header(conf.c2h_header_prefix .. claim_key, claim_value)
+            else
+                kong.service.request.set_header(claim_key, claim_value)
+            end
+        end
+    end
+end
+
+local function write_claims_to_request(conf, jwt_claims)
+    
+    local addl_claims = {}
+    local realm_name = nil
+
+
+    -- print ("conf.c2h_claim_filter_pattern=" .. table_to_json(conf.c2h_claim_filter_pattern) )
+    -- print ("conf.c2h_name_mapping=" .. table_to_json (conf.c2h_name_mapping) )
+    -- print ("conf.c2h_header_prefix=" .. conf.c2h_header_prefix)
+
+    write_claims_to_headers(conf, jwt_claims)
+
+    -- extract realm-name from ISS and make it available as a claim. Assumes realm-name starts with alpha, followed by one or more alphanumberic, underscore and hyphen
+    --  http://foobar.example.com/auth/realms/REALMNAME
+    realm_name = ""
+    if (jwt_claims.iss) then
+        realm_name = string.match(jwt_claims.iss, "(%a[a-zA-Z0-9\\_\\-]*)/?$")
+        if (realm_name == nil) then
+            realm_name = ""
+        end
+    end
+    write_claims_to_headers(conf, {realm_name = realm_name})
+    return true
+end
 --- Retrieve a JWT in a request.
 -- Checks for the JWT in URI parameters, then in cookies, and finally
 -- in the `Authorization` header.
@@ -158,13 +255,16 @@ local function set_consumer(consumer, credential, token)
 end
 
 local function get_keys(well_known_endpoint)
+    local err = nil
+    local keys = nil
+
     kong.log.debug('Getting public keys from keycloak')
     keys, err = keycloak_keys.get_issuer_keys(well_known_endpoint)
     if err then
         return nil, err
     end
 
-    decoded_keys = {}
+    local decoded_keys = {}
     for i, key in ipairs(keys) do
         decoded_keys[i] = jwt_decoder:base64_decode(key)
     end
@@ -177,9 +277,13 @@ local function get_keys(well_known_endpoint)
 end
 
 local function validate_signature(conf, jwt, second_call)
+    local err = nil
     local issuer_cache_key = 'issuer_keys_' .. jwt.claims.iss
     
-    well_known_endpoint = keycloak_keys.get_wellknown_endpoint(conf.well_known_template, jwt.claims.iss)
+    -- kong.log.err('isser keys' .. jwt.claims.iss)
+    -- kong.log.err('well known template' .. conf.well_known_template)
+    local well_known_endpoint = keycloak_keys.get_wellknown_endpoint(conf.well_known_template, jwt.claims.iss)
+    -- kong.log.err('well known endpoint' .. well_known_endpoint)
     -- Retrieve public keys
     local public_keys, err = kong.cache:get(issuer_cache_key, nil, get_keys, well_known_endpoint, true)
 
@@ -261,6 +365,7 @@ local function do_authentication(conf)
         return false, { status = 401, message = "Bad token; " .. tostring(err) }
     end
 
+
     -- Verify algorithim
     if jwt.header.alg ~= (conf.algorithm or "HS256") then
         return false, {status = 403, message = "Invalid algorithm"}
@@ -311,6 +416,10 @@ local function do_authentication(conf)
 
     if ok then
         ok, err = validate_client_roles(conf.client_roles, jwt.claims)
+    end
+
+    if ok then
+        ok, err = write_claims_to_request(conf, jwt.claims)
     end
 
     if ok then
