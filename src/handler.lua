@@ -124,30 +124,6 @@ local function write_claims_to_headers(conf, jwt_claims)
     end
 end
 
-local function write_claims_to_request(conf, jwt_claims)
-    
-    local addl_claims = {}
-    local realm_name = nil
-
-
-    -- print ("conf.c2h_claim_filter_pattern=" .. table_to_json(conf.c2h_claim_filter_pattern) )
-    -- print ("conf.c2h_name_mapping=" .. table_to_json (conf.c2h_name_mapping) )
-    -- print ("conf.c2h_header_prefix=" .. conf.c2h_header_prefix)
-
-    write_claims_to_headers(conf, jwt_claims)
-
-    -- extract realm-name from ISS and make it available as a claim. Assumes realm-name starts with alpha, followed by one or more alphanumberic, underscore and hyphen
-    --  http://foobar.example.com/auth/realms/REALMNAME
-    realm_name = ""
-    if (jwt_claims.iss) then
-        realm_name = string.match(jwt_claims.iss, "(%a[a-zA-Z0-9\\_\\-]*)/?$")
-        if (realm_name == nil) then
-            realm_name = ""
-        end
-    end
-    write_claims_to_headers(conf, {realm_name = realm_name})
-    return true
-end
 --- Retrieve a JWT in a request.
 -- Checks for the JWT in URI parameters, then in cookies, and finally
 -- in the `Authorization` header.
@@ -187,6 +163,32 @@ local function retrieve_token(conf)
             return m[1]
         end
     end
+end
+
+local function write_claims_to_request(conf, jwt_claims)
+    
+    local addl_claims = {}
+    local realm_name = nil
+
+
+    -- print ("conf.c2h_claim_filter_pattern=" .. table_to_json(conf.c2h_claim_filter_pattern) )
+    -- print ("conf.c2h_name_mapping=" .. table_to_json (conf.c2h_name_mapping) )
+    -- print ("conf.c2h_header_prefix=" .. conf.c2h_header_prefix)
+
+    write_claims_to_headers(conf, jwt_claims)
+
+    -- extract JWT token, realm-name from ISS and make it available as a claim. Assumes realm-name starts with alpha, followed by one or more alphanumberic, underscore and hyphen
+    --  http://foobar.example.com/auth/realms/REALMNAME
+    realm_name = ""
+    if (jwt_claims.iss) then
+        realm_name = string.match(jwt_claims.iss, "(%a[a-zA-Z0-9\\_\\-]*)/?$")
+        if (realm_name == nil) then
+            realm_name = ""
+        end
+    end
+    local jwt_token = retrieve_token(conf)
+    write_claims_to_headers(conf, {realm_name = realm_name, jwt = jwt_token})
+    return true
 end
 
 function JwtKeycloakHandler:new()
@@ -386,7 +388,7 @@ local function do_authentication(conf)
     end
 
     -- Verify that the issuer is allowed
-    if not validate_issuer(conf.allowed_iss, jwt.claims) then
+    if not validate_issuer(conf.allowed_iss,  jwt.claims, conf.c2h_allwed_iss_prefix_match) then
         return false, { status = 401, message = "Token issuer not allowed" }
     end
 

@@ -28,6 +28,7 @@ return {
           { consumer_match_claim = { type = "string", default = "azp" }, },
           { consumer_match_claim_custom_id = { type = "boolean", default = false }, },
           { consumer_match_ignore_not_found = { type = "boolean", default = false }, },
+          { c2h_allwed_iss_prefix_match = { type = "boolean", default = false }, },
           { c2h_claim_filter_pattern = { type = "array", elements = { type = "string", is_regex = true }, default = {".*"} }, },
           { c2h_name_mapping = {type = "map", keys = {type = "string"}, values = {type = "string"}, default = {foo="foo"}}, },
           { c2h_header_prefix = { type = "string"}, },
