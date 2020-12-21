@@ -92,29 +92,84 @@ function table_to_json(tbl)
     return result
 end
 
+local function split(s, delimiter)
+    local result = {};
+    local count = 0 ;
+    if (s ~= nil) then
+        for match in (s..delimiter):gmatch("(.-)"..delimiter) do
+            table.insert(result, match);
+            count = count + 1
+        end
+    end
+    return count,result;
+end
+local function process_claim_key_value(conf, jwt_claims, claim_pattern, claim_key, claim_value)
+    local mapped_name = nil
+
+    -- emulate our own simple json path
+    -- if # is present in "key", then traverse through claims table for each part separated by "#"
+    local count, jsonpaths = split(claim_pattern, "#")
+    if (count > 1) then
+        -- print(" # found, proceeding " .. tostring(count))
+        local curtable = jwt_claims
+        local val = curtable
+        local index = 0
+        for index,key in ipairs(jsonpaths) do
+          if type(val) ~= "table" then
+             break
+          end
+          curtable = val
+          val = curtable[key]
+          if (val == nil) then
+            break
+          end
+          -- print ("processig key:" .. key .. " cur value=" .. tostring(val) .. " index=" .. tostring(index))
+          if (index == count) then
+            claim_value = val
+          end  
+        end
+
+    end
+    if type(claim_value) == "table" then
+        claim_value = table_to_json(claim_value)
+    end
+
+    -- process mapped key names
+    mapped_name = conf.c2h_name_mapping[claim_key]
+    -- print ("mapped name=" .. tostring(mapped_name) .. "claim key=" .. tostring(claim_key) )
+
+    if (mapped_name) then
+        claim_key = mapped_name
+    end
+
+    return claim_key, claim_value
+end
+local function get_claim_pattern_to_match(claim_pattern)
+    if (claim_pattern == nil) then return claim_pattern end
+    local count, paths = split(claim_pattern, "#")
+    -- if it matches, we need first part. Otherwise, entire string is in the first part anyway
+    return paths[1]
+end
 local function write_claims_to_headers(conf, jwt_claims)
 
-    local mapped_name = nil
     local add_header = false
-
+    local claim_key, claim_value
+    local matched_pattern = nil
 
     add_header = (conf.c2h_claim_filter_pattern == nil)
     for claim_key,claim_value in pairs(jwt_claims) do
         -- print ("claim key=" .. claim_key .. " value=" .. tostring(claim_value))
         if conf.c2h_claim_filter_pattern  then
-            for _,claim_pattern in pairs(conf.c2h_claim_filter_pattern) do      
-                add_header = string.match(claim_key, "^"..claim_pattern.."$")
-                if (add_header) then break end
+            for _,claim_pattern in pairs(conf.c2h_claim_filter_pattern) do 
+                add_header = string.match(claim_key, "^" .. get_claim_pattern_to_match(claim_pattern) .. "$")
+                if (add_header) then 
+                    matched_pattern = claim_pattern
+                    break 
+                end
             end
         end
-        if add_header then 
-            mapped_name = conf.c2h_name_mapping[claim_key]
-            if (mapped_name) then
-                claim_key = mapped_name
-            end
-            if type(claim_value) == "table" then
-                claim_value = table_to_json(claim_value)
-            end
+        if add_header then
+            claim_key, claim_value = process_claim_key_value(conf, jwt_claims, matched_pattern, claim_key, claim_value) 
             if (conf.c2h_header_prefix) then
                 kong.service.request.set_header(conf.c2h_header_prefix .. claim_key, claim_value)
             else
